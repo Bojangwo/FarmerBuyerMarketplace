@@ -6,6 +6,7 @@ const testRoutes = require("./routes/testRoutes");
 const categoryRoutes = require("./routes/categoryRoutes");
 const productRoutes = require("./routes/productRoutes");
 const purchaseRequestRoutes = require("./routes/purchaseRequestRoutes");
+const orderRoutes = require("./routes/orderRoutes");
 
 const connectDB = require("./config/db");
 
@@ -25,6 +26,7 @@ app.use("/api/test", testRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/purchase-requests", purchaseRequestRoutes);
+app.use("/api/orders", orderRoutes);
 // Test route
 app.get("/", (req, res) => {
   res.json({
