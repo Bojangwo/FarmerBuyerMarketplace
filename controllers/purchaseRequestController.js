@@ -7,7 +7,12 @@ const Order = require("../models/Order");
 
 const createPurchaseRequest = async (req, res) => {
   try {
-    const { product, quantityRequested, message } = req.body;
+    const {
+  product,
+  quantityRequested,
+  message,
+  deliveryAddress,
+} = req.body;
 
     if (!product || quantityRequested === undefined) {
       return res.status(400).json({
@@ -49,6 +54,21 @@ const createPurchaseRequest = async (req, res) => {
       });
     }
 
+    if (
+  typeof deliveryAddress !== "string" ||
+  !deliveryAddress.trim()
+) {
+  return res.status(400).json({
+    message: "Delivery address is required",
+  });
+}
+
+if (deliveryAddress.trim().length > 300) {
+  return res.status(400).json({
+    message: "Delivery address cannot exceed 300 characters",
+  });
+}
+
     // A farmer cannot request their own product
     if (existingProduct.farmer.toString() === req.user.id) {
       return res.status(400).json({
@@ -64,12 +84,14 @@ const createPurchaseRequest = async (req, res) => {
       });
     }
 
+
     const purchaseRequest = await PurchaseRequest.create({
       buyer: req.user.id,
       farmer: existingProduct.farmer,
       product: existingProduct._id,
       quantityRequested: quantity,
       message: message ? message.trim() : "",
+      deliveryAddress: deliveryAddress.trim(),
     });
 
     const populatedRequest = await PurchaseRequest.findById(
@@ -268,6 +290,7 @@ const respondToPurchaseRequest = async (req, res) => {
             subtotal,
             deliveryFee,
             totalAmount,
+            deliveryAddress: purchaseRequest.deliveryAddress,
             currency: "GMD",
             status: "pending",
             paymentStatus: "unpaid",

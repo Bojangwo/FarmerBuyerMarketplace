@@ -38,7 +38,6 @@ const getMyOrders = async (req, res) => {
 };
 
 
-
 const getMyDeliveries = async (req, res) => {
   try {
     const orders = await Order.find({
@@ -47,11 +46,42 @@ const getMyDeliveries = async (req, res) => {
       .populate("product", "name description images price unit")
       .populate("buyer", "name phone")
       .populate("farmer", "name phone")
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const deliveries = orders.map((order) => ({
+      _id: order._id,
+      orderNumber: order.orderNumber,
+
+      // Product information
+      product: order.product,
+      quantity: order.quantity,
+      unitPrice: order.unitPrice,
+      subtotal: order.subtotal,
+
+      // Payment and order information
+      deliveryFee: order.deliveryFee,
+      totalAmount: order.totalAmount,
+      currency: order.currency,
+      paymentStatus: order.paymentStatus,
+      status: order.status,
+
+      // Delivery information
+      deliveryAddress: order.deliveryAddress,
+      deliveryStatus: order.deliveryStatus,
+
+      // Buyer and farmer contact information
+      buyer: order.buyer,
+      farmer: order.farmer,
+
+      // Dates
+      createdAt: order.createdAt,
+      updatedAt: order.updatedAt,
+    }));
 
     return res.status(200).json({
-      count: orders.length,
-      orders,
+      count: deliveries.length,
+      deliveries,
     });
   } catch (error) {
     console.error("Get my deliveries error:", error);
@@ -61,6 +91,7 @@ const getMyDeliveries = async (req, res) => {
     });
   }
 };
+
 
 
 
@@ -271,17 +302,25 @@ const assignDeliveryAgent = async (req, res) => {
       });
     }
 
-    if (["completed", "cancelled"].includes(order.status)) {
-      return res.status(400).json({
-        message: "Cannot assign a delivery agent to this order",
-      });
-    }
+    
+if (order.status !== "ready_for_delivery") {
+  return res.status(400).json({
+    message:
+      "A delivery agent can only be assigned when the order is ready for delivery",
+  });
+}
 
-    if (order.deliveryStatus === "delivered") {
-      return res.status(400).json({
-        message: "This order has already been delivered",
-      });
-    }
+
+    if (
+  !["not_assigned", "assigned", "failed"].includes(
+    order.deliveryStatus
+  )
+) {
+  return res.status(400).json({
+    message:
+      "This delivery cannot be assigned or reassigned in its current status",
+  });
+}
 
     order.deliveryAgent = agent._id;
     order.deliveryStatus = "assigned";
@@ -307,14 +346,12 @@ const updateDeliveryStatus = async (req, res) => {
     const { orderId } = req.params;
     const { deliveryStatus } = req.body;
 
-    // Check whether the order ID is valid.
     if (!mongoose.Types.ObjectId.isValid(orderId)) {
       return res.status(400).json({
         message: "Invalid order ID",
       });
     }
 
-    // Check whether the requested status is valid.
     const allowedStatuses = [
       "picked_up",
       "in_transit",
@@ -328,7 +365,6 @@ const updateDeliveryStatus = async (req, res) => {
       });
     }
 
-    // Find the order assigned to this delivery agent.
     const order = await Order.findOne({
       _id: orderId,
       deliveryAgent: req.user.id,
@@ -340,25 +376,49 @@ const updateDeliveryStatus = async (req, res) => {
       });
     }
 
-    // Define the allowed delivery-status transitions.
-    const allowedTransitions = {
-      not_assigned: [],
-      assigned: ["picked_up"],
-      picked_up: ["in_transit", "failed"],
-      in_transit: ["delivered", "failed"],
-      delivered: [],
-      failed: [],
-    };
+    // The farmer must prepare the order before pickup.
+    if (
+      deliveryStatus === "picked_up" &&
+      order.status !== "ready_for_delivery"
+    ) {
+      return res.status(400).json({
+        message:
+          "The order must be ready for delivery before it can be picked up",
+      });
+    }
 
-    // Prevent invalid status changes.
-    if (!allowedTransitions[order.deliveryStatus].includes(deliveryStatus)) {
+    // Prevent delivery of cancelled or completed orders.
+    if (["cancelled", "completed"].includes(order.status)) {
+      return res.status(400).json({
+        message: "Cannot update delivery status for this order",
+      });
+    }
+
+    const allowedTransitions = {
+  not_assigned: [],
+  assigned: ["picked_up", "failed"],
+  picked_up: ["in_transit", "failed"],
+  in_transit: ["delivered", "failed"],
+  delivered: [],
+  failed: [],
+};
+
+    if (
+      !allowedTransitions[order.deliveryStatus] ||
+      !allowedTransitions[order.deliveryStatus].includes(deliveryStatus)
+    ) {
       return res.status(400).json({
         message: `Cannot change delivery status from ${order.deliveryStatus} to ${deliveryStatus}`,
       });
     }
 
-    // Update and save the delivery status.
     order.deliveryStatus = deliveryStatus;
+
+    // Keep the main order status in sync after successful delivery.
+    if (deliveryStatus === "delivered") {
+      order.status = "completed";
+    }
+
     await order.save();
 
     return res.status(200).json({
@@ -373,6 +433,7 @@ const updateDeliveryStatus = async (req, res) => {
     });
   }
 };
+
 
 
 
