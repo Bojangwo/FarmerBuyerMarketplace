@@ -22,6 +22,12 @@ const orderSchema = new mongoose.Schema(
       required: true,
     },
 
+    deliveryAgent: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+
     product: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Product",

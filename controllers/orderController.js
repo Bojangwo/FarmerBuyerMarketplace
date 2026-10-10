@@ -1,5 +1,7 @@
 const mongoose = require("mongoose");
 const Order = require("../models/Order");
+const Product = require("../models/Product");
+const User = require("../models/User");
 
 // Get orders belonging to the logged-in buyer or farmer
 const getMyOrders = async (req, res) => {
@@ -34,6 +36,33 @@ const getMyOrders = async (req, res) => {
     });
   }
 };
+
+
+
+const getMyDeliveries = async (req, res) => {
+  try {
+    const orders = await Order.find({
+      deliveryAgent: req.user.id,
+    })
+      .populate("product", "name description images price unit")
+      .populate("buyer", "name phone")
+      .populate("farmer", "name phone")
+      .sort({ createdAt: -1 });
+
+    return res.status(200).json({
+      count: orders.length,
+      orders,
+    });
+  } catch (error) {
+    console.error("Get my deliveries error:", error);
+
+    return res.status(500).json({
+      message: "Server error while fetching assigned deliveries",
+    });
+  }
+};
+
+
 
 // Get details of one order belonging to the logged-in buyer or farmer
 const getOrderById = async (req, res) => {
@@ -81,7 +110,10 @@ const getOrderById = async (req, res) => {
 
 
 
+
 const updateOrderStatus = async (req, res) => {
+  const session = await mongoose.startSession();
+
   try {
     const { orderId } = req.params;
     const { status } = req.body;
@@ -106,17 +138,6 @@ const updateOrderStatus = async (req, res) => {
       });
     }
 
-    const order = await Order.findOne({
-      _id: orderId,
-      farmer: req.user.id,
-    });
-
-    if (!order) {
-      return res.status(404).json({
-        message: "Order not found",
-      });
-    }
-
     const allowedTransitions = {
       pending: ["confirmed", "cancelled"],
       confirmed: ["processing", "cancelled"],
@@ -126,31 +147,240 @@ const updateOrderStatus = async (req, res) => {
       cancelled: [],
     };
 
-    if (!allowedTransitions[order.status].includes(status)) {
-      return res.status(400).json({
-        message: `Cannot change order status from ${order.status} to ${status}`,
-      });
-    }
+    let responseStatus = 200;
+    let responseBody;
 
-    order.status = status;
-    await order.save();
+    await session.withTransaction(async () => {
+      // Find an order belonging to this farmer.
+      const order = await Order.findOne({
+        _id: orderId,
+        farmer: req.user.id,
+      }).session(session);
 
-    return res.status(200).json({
-      message: "Order status updated successfully",
-      order,
+      if (!order) {
+        responseStatus = 404;
+        responseBody = {
+          message: "Order not found",
+        };
+        return;
+      }
+
+      // Check whether this status change is allowed.
+      if (!allowedTransitions[order.status].includes(status)) {
+        responseStatus = 400;
+        responseBody = {
+          message: `Cannot change order status from ${order.status} to ${status}`,
+        };
+        return;
+      }
+
+      // Restore product stock when an order is cancelled.
+      if (status === "cancelled") {
+        const product = await Product.findById(
+          order.product
+        ).session(session);
+
+        if (!product) {
+          responseStatus = 404;
+          responseBody = {
+            message: "Product not found. Order was not cancelled.",
+          };
+          return;
+        }
+
+        const stockUpdate = {
+          $inc: {
+            quantity: order.quantity,
+          },
+        };
+
+        // Make an out-of-stock product available again.
+        // Do not reactivate inactive or sold products.
+        if (product.status === "out_of_stock") {
+          stockUpdate.$set = {
+            status: "available",
+          };
+        }
+
+        await Product.updateOne(
+          { _id: product._id },
+          stockUpdate,
+          { session }
+        );
+      }
+
+      // Update the order in the same transaction.
+      order.status = status;
+      await order.save({ session });
+
+      responseStatus = 200;
+      responseBody = {
+        message: "Order status updated successfully",
+        order,
+      };
     });
+
+    return res.status(responseStatus).json(responseBody);
   } catch (error) {
     console.error("Update order status error:", error);
 
     return res.status(500).json({
       message: "Server error while updating order status",
     });
+  } finally {
+    await session.endSession();
   }
 };
 
 
+
+const assignDeliveryAgent = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { deliveryAgentId } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({
+        message: "Invalid order ID",
+      });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(deliveryAgentId)) {
+      return res.status(400).json({
+        message: "Invalid delivery agent ID",
+      });
+    }
+
+    const agent = await User.findOne({
+      _id: deliveryAgentId,
+      role: "deliveryAgent",
+      status: "active",
+    }).select("_id name phone role status");
+
+    if (!agent) {
+      return res.status(404).json({
+        message: "Active delivery agent not found",
+      });
+    }
+
+    const order = await Order.findById(orderId);
+
+    if (!order) {
+      return res.status(404).json({
+        message: "Order not found",
+      });
+    }
+
+    if (["completed", "cancelled"].includes(order.status)) {
+      return res.status(400).json({
+        message: "Cannot assign a delivery agent to this order",
+      });
+    }
+
+    if (order.deliveryStatus === "delivered") {
+      return res.status(400).json({
+        message: "This order has already been delivered",
+      });
+    }
+
+    order.deliveryAgent = agent._id;
+    order.deliveryStatus = "assigned";
+
+    await order.save();
+
+    return res.status(200).json({
+      message: "Delivery agent assigned successfully",
+      order,
+      deliveryAgent: agent,
+    });
+  } catch (error) {
+    console.error("Assign delivery agent error:", error);
+
+    return res.status(500).json({
+      message: "Server error while assigning delivery agent",
+    });
+  }
+};
+
+const updateDeliveryStatus = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { deliveryStatus } = req.body;
+
+    // Check whether the order ID is valid.
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({
+        message: "Invalid order ID",
+      });
+    }
+
+    // Check whether the requested status is valid.
+    const allowedStatuses = [
+      "picked_up",
+      "in_transit",
+      "delivered",
+      "failed",
+    ];
+
+    if (!allowedStatuses.includes(deliveryStatus)) {
+      return res.status(400).json({
+        message: "Invalid delivery status",
+      });
+    }
+
+    // Find the order assigned to this delivery agent.
+    const order = await Order.findOne({
+      _id: orderId,
+      deliveryAgent: req.user.id,
+    });
+
+    if (!order) {
+      return res.status(404).json({
+        message: "Order not found or not assigned to you",
+      });
+    }
+
+    // Define the allowed delivery-status transitions.
+    const allowedTransitions = {
+      not_assigned: [],
+      assigned: ["picked_up"],
+      picked_up: ["in_transit", "failed"],
+      in_transit: ["delivered", "failed"],
+      delivered: [],
+      failed: [],
+    };
+
+    // Prevent invalid status changes.
+    if (!allowedTransitions[order.deliveryStatus].includes(deliveryStatus)) {
+      return res.status(400).json({
+        message: `Cannot change delivery status from ${order.deliveryStatus} to ${deliveryStatus}`,
+      });
+    }
+
+    // Update and save the delivery status.
+    order.deliveryStatus = deliveryStatus;
+    await order.save();
+
+    return res.status(200).json({
+      message: "Delivery status updated successfully",
+      order,
+    });
+  } catch (error) {
+    console.error("Update delivery status error:", error);
+
+    return res.status(500).json({
+      message: "Server error while updating delivery status",
+    });
+  }
+};
+
+
+
 module.exports = {
   getMyOrders,
+  getMyDeliveries,
   getOrderById,
   updateOrderStatus,
+  assignDeliveryAgent,
+  updateDeliveryStatus,
 };
