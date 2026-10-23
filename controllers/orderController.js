@@ -322,10 +322,45 @@ if (order.status !== "ready_for_delivery") {
   });
 }
 
-    order.deliveryAgent = agent._id;
-    order.deliveryStatus = "assigned";
+    const previousAgentId = order.deliveryAgent;
 
-    await order.save();
+if (!Array.isArray(order.deliveryAssignmentHistory)) {
+  order.deliveryAssignmentHistory = [];
+}
+
+// Record the previous assignment when an agent is being replaced.
+if (
+  previousAgentId &&
+  previousAgentId.toString() !== agent._id.toString()
+) {
+  const previousAssignment =
+    order.deliveryAssignmentHistory
+      .slice()
+      .reverse()
+      .find(
+        (assignment) =>
+          assignment.deliveryAgent.toString() ===
+            previousAgentId.toString() &&
+          assignment.outcome === "assigned"
+      );
+
+  if (previousAssignment) {
+    previousAssignment.outcome = "reassigned";
+  }
+}
+
+// Record the new assignment.
+order.deliveryAssignmentHistory.push({
+  deliveryAgent: agent._id,
+  assignedBy: req.user.id,
+  assignedAt: new Date(),
+  outcome: "assigned",
+});
+
+order.deliveryAgent = agent._id;
+order.deliveryStatus = "assigned";
+
+await order.save();
 
     return res.status(200).json({
       message: "Delivery agent assigned successfully",
@@ -340,6 +375,7 @@ if (order.status !== "ready_for_delivery") {
     });
   }
 };
+
 
 const updateDeliveryStatus = async (req, res) => {
   try {
@@ -387,7 +423,7 @@ const updateDeliveryStatus = async (req, res) => {
       });
     }
 
-    // Prevent delivery of cancelled or completed orders.
+    // Prevent updates to cancelled or completed orders.
     if (["cancelled", "completed"].includes(order.status)) {
       return res.status(400).json({
         message: "Cannot update delivery status for this order",
@@ -395,13 +431,13 @@ const updateDeliveryStatus = async (req, res) => {
     }
 
     const allowedTransitions = {
-  not_assigned: [],
-  assigned: ["picked_up", "failed"],
-  picked_up: ["in_transit", "failed"],
-  in_transit: ["delivered", "failed"],
-  delivered: [],
-  failed: [],
-};
+      not_assigned: [],
+      assigned: ["picked_up", "failed"],
+      picked_up: ["in_transit", "failed"],
+      in_transit: ["delivered", "failed"],
+      delivered: [],
+      failed: [],
+    };
 
     if (
       !allowedTransitions[order.deliveryStatus] ||
@@ -414,9 +450,33 @@ const updateDeliveryStatus = async (req, res) => {
 
     order.deliveryStatus = deliveryStatus;
 
-    // Keep the main order status in sync after successful delivery.
+    // Mark the main order completed after successful delivery.
     if (deliveryStatus === "delivered") {
       order.status = "completed";
+    }
+
+    // Update the current assignment's outcome when the delivery ends.
+    if (
+      deliveryStatus === "failed" ||
+      deliveryStatus === "delivered"
+    ) {
+      const history = Array.isArray(order.deliveryAssignmentHistory)
+        ? order.deliveryAssignmentHistory
+        : [];
+
+      const currentAssignment = history
+        .slice()
+        .reverse()
+        .find(
+          (assignment) =>
+            assignment.deliveryAgent.toString() ===
+              req.user.id.toString() &&
+            assignment.outcome === "assigned"
+        );
+
+      if (currentAssignment) {
+        currentAssignment.outcome = deliveryStatus;
+      }
     }
 
     await order.save();
@@ -436,6 +496,58 @@ const updateDeliveryStatus = async (req, res) => {
 
 
 
+const getDeliveryHistory = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+
+    // Validate the order ID.
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({
+        message: "Invalid order ID",
+      });
+    }
+
+    // Find the order and retrieve its delivery history.
+    const order = await Order.findById(orderId)
+      .select(
+        "orderNumber status deliveryStatus deliveryAssignmentHistory"
+      )
+      .populate(
+        "deliveryAssignmentHistory.deliveryAgent",
+        "name phone role status"
+      )
+      .populate(
+        "deliveryAssignmentHistory.assignedBy",
+        "name role"
+      )
+      .lean();
+
+    if (!order) {
+      return res.status(404).json({
+        message: "Order not found",
+      });
+    }
+
+    return res.status(200).json({
+      message: "Delivery history retrieved successfully",
+      orderNumber: order.orderNumber,
+      orderStatus: order.status,
+      deliveryStatus: order.deliveryStatus,
+      count: order.deliveryAssignmentHistory
+        ? order.deliveryAssignmentHistory.length
+        : 0,
+      history: order.deliveryAssignmentHistory || [],
+    });
+  } catch (error) {
+    console.error("Get delivery history error:", error);
+
+    return res.status(500).json({
+      message: "Server error while fetching delivery history",
+    });
+  }
+};
+
+
 
 module.exports = {
   getMyOrders,
@@ -444,4 +556,5 @@ module.exports = {
   updateOrderStatus,
   assignDeliveryAgent,
   updateDeliveryStatus,
+  getDeliveryHistory,
 };

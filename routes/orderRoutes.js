@@ -8,6 +8,7 @@ const {
   updateOrderStatus,
   assignDeliveryAgent,
   updateDeliveryStatus,
+  getDeliveryHistory,
 } = require("../controllers/orderController");
 
 const protect = require("../middleware/authMiddleware");
@@ -45,6 +46,13 @@ router.patch(
   assignDeliveryAgent
 );
 
+// Admin views an order's delivery assignment history
+router.get(
+  "/:orderId/delivery-history",
+  protect,
+  require("../middleware/roleMiddleware")("admin"),
+  getDeliveryHistory
+);
 
 // View one order's details
 router.get("/:orderId", protect, getOrderById);

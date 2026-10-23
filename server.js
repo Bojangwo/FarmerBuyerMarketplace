@@ -7,6 +7,8 @@ const categoryRoutes = require("./routes/categoryRoutes");
 const productRoutes = require("./routes/productRoutes");
 const purchaseRequestRoutes = require("./routes/purchaseRequestRoutes");
 const orderRoutes = require("./routes/orderRoutes");
+const paymentRoutes = require("./routes/paymentRoutes");
+const reviewRoutes = require("./routes/reviewRoutes");
 
 const connectDB = require("./config/db");
 
@@ -19,6 +21,7 @@ connectDB();
 
 // Middleware
 app.use(cors());
+app.use("/api/payments/webhook",require("./routes/paymentWebhookRoutes"));
 app.use(express.json());
 app.use("/uploads", express.static("uploads"));
 app.use("/api/auth", authRoutes);
@@ -27,6 +30,14 @@ app.use("/api/categories", categoryRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/purchase-requests", purchaseRequestRoutes);
 app.use("/api/orders", orderRoutes);
+app.use(
+  "/api/delivery-agents",
+  require("./routes/deliveryAgentRoutes")
+);
+app.use("/api/payments", paymentRoutes);
+app.use("/api/reviews", reviewRoutes);
+
+
 // Test route
 app.get("/", (req, res) => {
   res.json({

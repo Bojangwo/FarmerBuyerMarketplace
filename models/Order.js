@@ -28,6 +28,32 @@ const orderSchema = new mongoose.Schema(
       default: null,
     },
 
+    
+deliveryAssignmentHistory: [
+  {
+    deliveryAgent: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
+    assignedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
+    assignedAt: {
+      type: Date,
+      default: Date.now,
+    },
+    outcome: {
+      type: String,
+      enum: ["assigned", "failed", "reassigned", "delivered"],
+      default: "assigned",
+    },
+  },
+],
+
+
     product: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Product",
